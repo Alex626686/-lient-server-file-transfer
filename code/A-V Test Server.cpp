@@ -21,7 +21,7 @@ public:
         start_accept();
     }
 
-private:
+private:  
     void start_accept() {
         auto socket = std::make_shared<tcp::socket>(io_context_);
         acceptor_.async_accept(*socket, [this, socket](std::error_code ec) {
@@ -34,23 +34,25 @@ private:
     }
 
     void receive_file(std::shared_ptr<tcp::socket> socket) {
-        auto buffer = std::make_shared<std::vector<char>>(BUFFER_SIZE);
-        auto filename = std::make_shared<std::string>();
+        auto strbuff = std::make_shared<std::string>();
         auto file = std::make_shared<std::ofstream>();
 
-        asio::async_read_until(*socket, asio::dynamic_buffer(*filename), '\n',
-            [this, socket, buffer, filename, file](std::error_code ec, std::size_t length) {
+        asio::async_read_until(*socket, asio::dynamic_buffer(*strbuff), '\n',
+            [this, socket, strbuff, file](std::error_code ec, std::size_t length) {
                 if (!ec) {
-                    filename->erase(filename->find('\n'));
-                    size_t size_pos = filename->find_last_of(' ');
-                    size_t filesize = std::stol(filename->substr(size_pos));
-                    filename->erase(size_pos);
+                    size_t n_pos = strbuff->find('\n');
+                    size_t space_pos = strbuff->find_last_of(' ',n_pos );
 
-                    std::cout << "Receiving: " << *filename << std::endl;
-                    file->open(SERVER_FOLDER + *filename, std::ios::binary);
-                    read_file_data(socket, buffer, file, filesize);
+                    std::string filename(strbuff->data(), space_pos);
+                    size_t filesize = std::stol(strbuff->substr(space_pos + 1, n_pos - 1));
+                    std::cout << "Receiving: " << filename << std::endl << "Size: " << filesize << std::endl;
+                    
+                    file->open(SERVER_FOLDER + filename, std::ios::binary);
+                    std::string tail(strbuff->substr(n_pos + 1));
+                    *file << tail;
+                    read_file_data(socket, file, filesize - tail.size());
                 }
-                else if (asio::error::eof) {
+                else if (ec == asio::error::eof) {
                     std::cout << "Client disconnected.\n";
                 }
                 else {
@@ -59,13 +61,14 @@ private:
             });
     }
 
-    void read_file_data(std::shared_ptr<tcp::socket> socket, std::shared_ptr<std::vector<char>> buffer, std::shared_ptr<std::ofstream> file, size_t filesize) {
+    void read_file_data(std::shared_ptr<tcp::socket> socket, std::shared_ptr<std::ofstream> file, size_t filesize) {
+
+        auto buffer = std::make_shared<std::vector<char>>(BUFFER_SIZE);
         socket->async_read_some(asio::buffer(*buffer, std::min(BUFFER_SIZE, filesize)),
             [this, socket, buffer, file, filesize](std::error_code ec, std::size_t length) {
                 if (!ec && length > 0) {
                     file->write(buffer->data(), length);
-
-                    read_file_data(socket, buffer, file, filesize - length);
+                    read_file_data(socket, file, filesize - length);
                 }
                 else if (ec) {
                     throw ec;
@@ -77,6 +80,7 @@ private:
                 }
             });
     }
+
     asio::io_context& io_context_;
     tcp::acceptor acceptor_;
 };
