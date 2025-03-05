@@ -1,39 +1,32 @@
-﻿#define _WIN32_WINNT 0x0601
-#include <iostream>
-#include <fstream>
-#include <filesystem>
-#include <asio.hpp>
+﻿#include "common.h"
 
 using asio::ip::tcp;
 namespace fs = std::filesystem;
 
-// Configuration
-const std::string SERVER_IP = "127.0.0.1";
-const int SERVER_PORT = 9000;
-const std::string CLIENT_FOLDER = "client_files/";
-const std::string SERVER_FOLDER = "server_files/";
-const size_t BUFFER_SIZE = 4096;
-
 class FileTransferClient {
 public:
-    FileTransferClient(asio::io_context& io_context, const std::string& server_ip, short server_port)
-        : socket_(io_context), endpoint_(asio::ip::make_address(server_ip), server_port) {
-        for (const auto& entry : std::filesystem::directory_iterator(CLIENT_FOLDER)) {
+    FileTransferClient(asio::io_context& io_context, Configuration config)
+        : config_(config), socket_(io_context) {
+        for (const auto& entry : std::filesystem::directory_iterator(config.directory_)) {
             files_.push_back(entry.path().string());
         }
         file_iter_ = files_.begin();
     }
-    void start_transfer() {
-        socket_.async_connect(endpoint_, [this](std::error_code ec) {
+    void StartTransfer() {
+        tcp::endpoint endpoint(asio::ip::make_address(config_.server_ip_), config_.server_port_);
+        socket_.async_connect(endpoint, [this](std::error_code ec) {
             if (!ec) {
                 std::cout << "Connected to server." << std::endl;
-                send_next_file();
+                SendNextFile();
+            }
+            else {
+                std::cerr << "Failed to connect to server\n";
             }
             });
     }
 
 private:
-    void send_next_file() {
+    void SendNextFile() {
         if (file_iter_ == files_.end()) {
             std::cout << "All files sent." << std::endl;
             return;
@@ -43,7 +36,7 @@ private:
         if (!current_file_) {
             std::cerr << "Failed to open file: " << *file_iter_ << std::endl;
             ++file_iter_;
-            send_next_file();
+            SendNextFile();
             return;
         }
         std::string path(fs::path(*file_iter_).filename().string());
@@ -55,45 +48,62 @@ private:
         asio::async_write(socket_, asio::buffer(*filename),
             [this, filename](std::error_code ec, std::size_t) {
             if (!ec) {
-                send_file_data();
+                SendFileData();
+            }
+            else {
+                std::cerr << "Failed to send filename: " << ec.message() << std::endl;
+                current_file_.close();
+                ++file_iter_;
+                SendNextFile();
             }
             });
     }
 
-    void send_file_data() {
+    void SendFileData() {
         if (current_file_.eof()) {
             current_file_.close();
             ++file_iter_;
-            send_next_file();
+            SendNextFile();
             return;
         }
 
-        auto buffer = std::make_shared<std::vector<char>>(BUFFER_SIZE);
+        auto buffer = std::make_shared<std::vector<char>>(config_.buffer_size_);
         current_file_.read(buffer->data(), buffer->size());
         std::streamsize bytes_read = current_file_.gcount();
 
         asio::async_write(socket_, asio::buffer(buffer->data(), bytes_read),
             [this](std::error_code ec, std::size_t) {
                 if (!ec) {
-                    send_file_data();
+                    SendFileData();
+                }
+                else if (ec == asio::error::eof) {
+                    std::cout << "Lost connection with server\n";
+                    StartTransfer();
+                }
+                else {
+                    std::cerr << "Failed to send file data: " << ec.message() << std::endl;
+                    current_file_.close();
+                    ++file_iter_;
+                    SendNextFile();
                 }
             });
 
     }
+    Configuration config_;
     tcp::socket socket_;
-    tcp::endpoint endpoint_;
     std::vector<std::string> files_;
-    std::vector<std::string>::iterator file_iter_ = files_.begin();
+    std::vector<std::string>::iterator file_iter_;
     std::ifstream current_file_;
 };
 
 int main() {
     try {
+        Configuration config("127.0.0.1", 9000);
         asio::io_context io_context;
 
-        fs::create_directories(CLIENT_FOLDER);
-        FileTransferClient client(io_context, SERVER_IP, SERVER_PORT);
-        client.start_transfer();
+        fs::create_directories(config.directory_);
+        FileTransferClient client(io_context, config);
+        client.StartTransfer();
         io_context.run();
     }
     catch (std::exception& e) {
@@ -102,3 +112,4 @@ int main() {
 
     return 0;
 }
+
